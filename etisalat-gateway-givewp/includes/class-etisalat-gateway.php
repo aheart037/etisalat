@@ -320,6 +320,15 @@ class EtisalatGateway extends PaymentGateway
                 );
             }
 
+            // Card entry must never be sent to an unencrypted payment page.
+            $paymentPageParts = wp_parse_url($paymentPage);
+            if (!is_array($paymentPageParts) || empty($paymentPageParts['host']) || empty($paymentPageParts['scheme']) || 'https' !== strtolower($paymentPageParts['scheme'])) {
+                throw new EtisalatApiException(
+                    __('The Etisalat gateway returned an invalid or insecure payment page URL.', 'etisalat-gateway-givewp'),
+                    $transaction
+                );
+            }
+
             /*
              * Keep the donation pending while the donor is on the EPG page and
              * remember the TransactionID + Payment Page URL for the return trip.
@@ -329,6 +338,9 @@ class EtisalatGateway extends PaymentGateway
             $donation->save();
 
             give_update_meta($donation->id, '_give_etisalat_payment_page', esc_url_raw($paymentPage), '', 'donation');
+            give_update_meta($donation->id, '_give_etisalat_expected_order_id', (string) $donation->id, '', 'donation');
+            give_update_meta($donation->id, '_give_etisalat_expected_amount', $donation->amount->formatToDecimal(), '', 'donation');
+            give_update_meta($donation->id, '_give_etisalat_expected_currency', $donation->amount->getCurrency()->getCode(), '', 'donation');
 
             DonationNote::create([
                 'donationId' => $donation->id,
@@ -558,6 +570,24 @@ class EtisalatGateway extends PaymentGateway
             return new RedirectResponse($failedUrl);
         }
 
+        /*
+         * Serialize callbacks for this donation. EPG/browser retries can arrive
+         * concurrently; without a lock a late declined response could race a
+         * successful response. add_option() is atomic at the database level.
+         */
+        $lockKey = 'give_etisalat_finalize_' . $donation->id;
+        if (!add_option($lockKey, time(), '', false)) {
+            $lockTime = (int) get_option($lockKey, 0);
+            if (!$lockTime || $lockTime > (time() - 300)) {
+                return new RedirectResponse($failedUrl);
+            }
+            // Recover a lock left by a terminated PHP process after five minutes.
+            delete_option($lockKey);
+            if (!add_option($lockKey, time(), '', false)) {
+                return new RedirectResponse($failedUrl);
+            }
+        }
+
         try {
             $api = EtisalatApi::fromSettings();
 
@@ -584,6 +614,30 @@ class EtisalatGateway extends PaymentGateway
             $approvalCode = isset($transaction['ApprovalCode']) ? $transaction['ApprovalCode'] : '';
 
             if (0 === $responseCode) {
+                /*
+                 * EPG documents OrderID and Amount as successful Finalization
+                 * fields. Verify both before crediting the donation. Currency
+                 * is not returned by this API; it is bound to TransactionID at
+                 * Registration and therefore cannot be independently compared.
+                 */
+                $verificationError = $this->verifyFinalization($donation, $transaction);
+                if ('' !== $verificationError) {
+                    // The bank says money moved, so hold for reconciliation rather than claiming failure.
+                    $donation->status = DonationStatus::PENDING();
+                    $donation->save();
+                    DonationNote::create([
+                        'donationId' => $donation->id,
+                        'content'    => $verificationError,
+                    ]);
+                    PaymentGatewayLog::error(
+                        sprintf('[%s] Successful Finalization failed local verification', $this->getName()),
+                        ['Donation' => $donation, 'transaction' => $transaction]
+                    );
+                    delete_option($lockKey);
+
+                    return new RedirectResponse($failedUrl);
+                }
+
                 // Success.
                 $donation->status = DonationStatus::COMPLETE();
                 $donation->gatewayTransactionId = (string) $transactionId;
@@ -601,6 +655,7 @@ class EtisalatGateway extends PaymentGateway
                  * @param array $transaction Finalization response Transaction object.
                  */
                 do_action('give_etisalat_donation_completed', $donation, $transaction);
+                delete_option($lockKey);
 
                 return new RedirectResponse($successUrl);
             }
@@ -619,6 +674,7 @@ class EtisalatGateway extends PaymentGateway
                         $transactionId
                     ),
                 ]);
+                delete_option($lockKey);
 
                 return new RedirectResponse($successUrl);
             }
@@ -637,6 +693,7 @@ class EtisalatGateway extends PaymentGateway
                 ),
                 $transaction
             );
+            delete_option($lockKey);
 
             return new RedirectResponse($failedUrl);
         } catch (Exception $e) {
@@ -663,6 +720,7 @@ class EtisalatGateway extends PaymentGateway
                     'error'    => $e->getMessage(),
                 ]
             );
+            delete_option($lockKey);
 
             return new RedirectResponse($failedUrl);
         }
@@ -727,6 +785,53 @@ class EtisalatGateway extends PaymentGateway
 
             throw new PaymentGatewayException($e->getMessage());
         }
+    }
+
+    /**
+     * Verify identity and amount fields in a successful Finalization response.
+     *
+     * @param Donation $donation
+     * @param array    $transaction
+     *
+     * @return string Empty when valid; otherwise a safe reconciliation reason.
+     */
+    private function verifyFinalization(Donation $donation, array $transaction)
+    {
+        $expectedOrderId = (string) give_get_meta($donation->id, '_give_etisalat_expected_order_id', true, (string) $donation->id, 'donation');
+        $expectedAmount = (string) give_get_meta($donation->id, '_give_etisalat_expected_amount', true, $donation->amount->formatToDecimal(), 'donation');
+        $returnedOrderId = isset($transaction['OrderID']) ? (string) $transaction['OrderID'] : '';
+        $returnedAmount = isset($transaction['Amount']['Value']) ? (string) $transaction['Amount']['Value'] : '';
+
+        if ('' === $returnedOrderId || !hash_equals($expectedOrderId, $returnedOrderId)) {
+            return __('Finalization OrderID did not match this donation. Manual reconciliation is required.', 'etisalat-gateway-givewp');
+        }
+
+        if ('' === $returnedAmount || $this->canonicalDecimal($expectedAmount) !== $this->canonicalDecimal($returnedAmount)) {
+            return __('Finalization amount did not match the donation amount. Manual reconciliation is required.', 'etisalat-gateway-givewp');
+        }
+
+        return '';
+    }
+
+    /**
+     * Canonicalize a non-negative decimal without floating-point arithmetic.
+     *
+     * @param string $value
+     * @return string
+     */
+    private function canonicalDecimal($value)
+    {
+        $value = trim((string) $value);
+        if (!preg_match('/^\d+(?:\.\d+)?$/', $value)) {
+            return '!invalid:' . $value;
+        }
+
+        $parts = explode('.', $value, 2);
+        $whole = ltrim($parts[0], '0');
+        $fraction = isset($parts[1]) ? rtrim($parts[1], '0') : '';
+        $whole = '' === $whole ? '0' : $whole;
+
+        return $whole . ('' !== $fraction ? '.' . $fraction : '');
     }
 
     /**

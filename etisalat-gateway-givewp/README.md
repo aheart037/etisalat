@@ -76,6 +76,18 @@ Every EPG interaction is recorded on the donation (TransactionID, ApprovalCode, 
 
 If your bank has **enabled the Refund API** on your EPG account (it requires bank approval), open a donation in **Donations → Donations**, change its status to *Refunded*, tick the *Refund in Etisalat Gateway* checkbox and save. The plugin calls the EPG Refund API for the full amount. If the refund fails, the reason is stored as a donation note and you can refund from the bank portal instead.
 
+## Recurring donations
+
+Recurring donations are **not supported** in this release (the EPG card-tokenization / recurrence APIs are not implemented yet). One-time donations work on any form. On donation forms where recurring is required, GiveWP will offer the recurring-capable gateways instead.
+
+## Testing with the sandbox
+
+1. Ask your bank's merchant integration team for **sandbox/staging credentials** (Customer ID, User Name, Password, Store/Terminal) and **test card numbers**.
+2. In the gateway settings, set **EPG API Endpoint URL** to the sandbox URL (per the EPG guide: `https://demo-ipg.ctdev.comtrust.ae`, port `2443`) and tick **Debug Logging**.
+3. Make a small test donation. Check **Donations → Donations**: it should be marked *Complete*, with the EPG **TransactionID** and **ApprovalCode** in the donation notes.
+4. Debug logs are under **Donations → Tools → Logs → Payment Gateway** (Registration / Finalization requests and responses).
+5. When moving to production, switch the endpoint URL and credentials to the production values your bank provides and untick Debug Logging.
+
 ## Developer notes
 
 * Gateway ID: `etisalat` (registered on `givewp_register_payment_gateway`).

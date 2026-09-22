@@ -54,6 +54,14 @@ Per the EPG integration guide: production `https://ipg.comtrust.ae` and sandbox 
 
 Yes, if your bank has enabled the Refund API on your EPG account. Refund a donation from the donation details screen and the plugin will call the EPG Refund API.
 
+= Does it support recurring donations? =
+
+Not yet. This release handles one-time donations. On forms where recurring is required, use a gateway that supports recurring donations.
+
+= How do I test it before going live? =
+
+Ask your bank for sandbox (staging) credentials and test cards, point the EPG API Endpoint URL to the sandbox URL, enable Debug Logging, and make a small test donation. Confirm the donation is marked Complete with a TransactionID and ApprovalCode in its notes, then switch the settings to your production credentials.
+
 == Changelog ==
 
 = 1.0.0 =

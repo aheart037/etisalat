@@ -249,12 +249,18 @@ class EtisalatApi
      */
     public function finalizeTransaction($transactionId)
     {
+        /*
+         * A declined/cancelled Finalization response is still a valid API
+         * response which the gateway handler must inspect and map to FAILED.
+         * An empty allow-list means "return every numeric EPG response code";
+         * transport, JSON and response-shape errors still throw.
+         */
         return $this->request('Finalization', [
             'TransactionID' => $transactionId,
             'Customer'      => $this->customer,
             'UserName'      => $this->userName,
             'Password'      => $this->password,
-        ], [0, 210]);
+        ], []);
     }
 
     /**
@@ -339,9 +345,16 @@ class EtisalatApi
             ? $decoded['Transaction']
             : $decoded;
 
-        $responseCode = isset($transaction['ResponseCode']) ? (int) $transaction['ResponseCode'] : null;
+        if (!isset($transaction['ResponseCode']) || !is_numeric($transaction['ResponseCode'])) {
+            throw new EtisalatApiException(
+                __('The Etisalat gateway response did not contain a valid ResponseCode.', 'etisalat-gateway-givewp'),
+                $transaction
+            );
+        }
 
-        if (!in_array($responseCode, $allowedResponseCodes, true)) {
+        $responseCode = (int) $transaction['ResponseCode'];
+
+        if ($allowedResponseCodes && !in_array($responseCode, $allowedResponseCodes, true)) {
             throw new EtisalatApiException(
                 sprintf(
                     /* translators: 1: response code, 2: response description, 3: response class description */

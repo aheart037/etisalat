@@ -90,6 +90,28 @@ Recurring donations are **not supported** in this release (the EPG card-tokeniza
 4. Debug logs are under **Donations → Tools → Logs → Payment Gateway** (Registration / Finalization requests and responses).
 5. When moving to production, switch the endpoint URL and credentials to the production values your bank provides and untick Debug Logging.
 
+## Production testing checklist
+
+Run these with bank-issued staging credentials before enabling production:
+
+- Successful card: donation becomes **Complete** and its detail screen contains TransactionID, ApprovalCode, amount, masked card and UniqueID.
+- Declined/cancelled/expired card: donation becomes **Failed** with the numeric EPG response code in its note.
+- Invalid credentials and malformed/non-JSON responses: checkout shows an error; no donation is completed.
+- Duplicate callback (including two concurrent requests): Finalization is serialized and a completed donation remains complete.
+- Close the browser before return: donation remains **Pending** for bank-portal reconciliation.
+- Timeout/network failure/verification failure: donation remains pending for an indeterminate transport result; a definitive bank decline fails it.
+- Wrong TransactionID, OrderID, or amount: completion is rejected and recorded. EPG Finalization does not return Currency, so currency is bound to the registered TransactionID but cannot be independently compared in the callback.
+- Untrusted/insecure payment-page URL: redirect is rejected.
+- Test the configured currency and amount limits with the bank; EPG accepts the merchant-enabled currencies and this plugin does not invent a narrower list.
+
+## API findings and scope
+
+The supplied WooCommerce plugin and EPG v1.7 guide use JSON over HTTPS (normally port 2443), with credentials in the operation object (`Customer`, optional `Store`/`Terminal`, `UserName`, `Password`). They define no request hash or response signature. TLS/client-certificate or username/password authentication is selected by the merchant account; the supplied plugin uses username/password and ships a CA bundle. This add-on preserves that model, verifies TLS by default, and never sends credentials to browser code or debug logs.
+
+The card flow is **Registration → POST TransactionID to PaymentPage → bank POSTs TransactionID to ReturnPath → Finalization**. ResponseCode `0` is success and `210` is pending; other definitive Finalization codes fail the donation. The guide also documents Authorization, Capture, Reversal, Refund, recurrence, and Central Bank push/pull processing. This release implements the hosted 3-D Secure donation flow and full Refund. It does not claim support for recurring donations, manual capture, Central Bank QueryTransaction/push notifications, or the mandated scheduled reversal of abandoned transactions because the supplied WooCommerce plugin does not implement them and the parsed guide does not provide a concrete QueryTransaction endpoint/payload in the supplied integration material. Pending transactions must therefore be reconciled in the bank portal.
+
+The user request refers several times to “Meezan Bank”; the supplied plugin and document are Etisalat EPG materials, so no Meezan-specific endpoint or behavior has been assumed.
+
 ## Developer notes
 
 ### Relationship to the GiveWP example gateway

@@ -304,10 +304,19 @@ $api->cannedResponses[] = json_encode([
 ]);
 
 try {
-    $api->finalizeTransaction('847718745846');
-    check('failing finalization throws', false);
+    $transaction = $api->finalizeTransaction('847718745846');
+    check('declined finalization is returned for status mapping', (int) $transaction['ResponseCode'] === 702);
 } catch (EtisalatApiException $e) {
-    check('failing finalization throws with description', strpos($e->getMessage(), 'Transaction failed') !== false);
+    check('declined finalization is returned for status mapping', false);
+}
+
+$api = new EtisalatApiTestDouble();
+$api->cannedResponses[] = json_encode(['Transaction' => ['ResponseDescription' => 'Malformed']]);
+try {
+    $api->finalizeTransaction('847718745846');
+    check('missing ResponseCode throws', false);
+} catch (EtisalatApiException $e) {
+    check('missing ResponseCode throws', strpos($e->getMessage(), 'ResponseCode') !== false);
 }
 
 /*

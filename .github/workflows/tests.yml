@@ -1,0 +1,43 @@
+name: Tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  php-tests:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    container: php:${{ matrix.php }}-cli
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4']
+
+    steps:
+      - name: Checkout (tarball)
+        run: |
+          cat > /tmp/fetch.php <<'PHP'
+          <?php
+          $repo = getenv('GITHUB_REPOSITORY');
+          $sha  = getenv('GITHUB_SHA');
+          copy("https://github.com/{$repo}/archive/{$sha}.tar.gz", '/tmp/repo.tar.gz');
+          $phar = new PharData('/tmp/repo.tar.gz');
+          try {
+              $phar->extractTo(getcwd());
+          } catch (Exception $e) {
+              // Some PHP builds need an explicit decompress step for .tar.gz archives.
+              $phar->decompress();
+              (new PharData('/tmp/repo.tar'))->extractTo(getcwd());
+          }
+          PHP
+          php /tmp/fetch.php
+          mv etisalat-* repo
+
+      - name: Syntax check
+        run: find repo/etisalat-gateway-givewp -name '*.php' -exec php -l {} \;
+
+      - name: Run test suite
+        run: php repo/etisalat-gateway-givewp/tests/run-tests.php

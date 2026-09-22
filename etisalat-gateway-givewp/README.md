@@ -92,6 +92,29 @@ Recurring donations are **not supported** in this release (the EPG card-tokeniza
 
 ## Developer notes
 
+### Relationship to the GiveWP example gateway
+
+This add-on was built on the official [GiveWP example gateway](https://github.com/impress-org/givewp-example-gateway) and follows its structure:
+
+| Example gateway | This plugin |
+|---|---|
+| `example-gateway-givewp.php` registers gateways on `givewp_register_payment_gateway` | `etisalat-gateway-givewp.php` does the same |
+| `ExampleGatewayOffsiteClass extends PaymentGateway` | `EtisalatGateway extends PaymentGateway` |
+| `createPayment()` returns `RedirectOffsite` | Same |
+| `$secureRouteMethods` + `handleCreatePaymentRedirect(): RedirectResponse` | `$secureRouteMethods` + `handleEtisalatPaymentPage()` (signed, browser-only) and `handleEtisalatReturn(): RedirectResponse` |
+| `enqueueScript()` + `formSettings()` + JS object via `window.givewp.gateways.register()` | Same (v3 Visual Form Builder support) |
+| `getLegacyFormFieldMarkup()` (v2 option-based forms) | Same |
+| `refundDonation(): PaymentRefunded` | Same (wired to the EPG Refund API) |
+| `class-example-gateway-api.php` (separate API class) | `includes/class-etisalat-api.php` (EPG REST client) |
+| Onsite example: catch → `DonationStatus::FAILED()` + `DonationNote` + `throw PaymentGatewayException` | Same pattern in `EtisalatGateway::createPayment()` |
+
+Intentional deviations, with reasons:
+
+1. **The EPG ReturnPath uses an unsigned route (`$routeMethods`), not a signed one.** The example puts its return handler in `$secureRouteMethods`, but a GiveWP signed route adds ~170 characters of signature/expiration/arg data and EPG rejects ReturnPaths over 256 characters (error 6560). Verification is instead done through the TransactionID match plus the Finalization API response. The browser-facing payment-page redirect *is* a signed route, exactly like the example.
+2. **The donor is POSTed to the payment page.** The example builds a GET redirect URL; EPG requires the TransactionID to be submitted as a POST form to the Payment Page, hence the signed intermediate route.
+3. **No subscription module.** The example ships one; recurring donations need EPG card tokenization which is not implemented yet (see *Recurring donations* above).
+4. **Admin settings.** The example has none; this plugin registers a settings section with `give_get_sections_gateways` / `give_get_settings_gateways`, the same mechanism GiveWP core uses for its own gateways.
+
 * Gateway ID: `etisalat` (registered on `givewp_register_payment_gateway`).
 * The gateway extends GiveWP's `PaymentGateway` class. The intermediate payment-page redirect uses a **signed gateway route** (browser-only URL, expires after one day). The EPG ReturnPath uses a compact unsigned route because EPG limits it to 256 characters — verification is done through the TransactionID match and the Finalization API response instead.
 * Supports **v3 (Visual Form Builder)** forms via `enqueueScript()`/`formSettings()` and **v2 (option-based)** forms via `getLegacyFormFieldMarkup()`.

@@ -3,7 +3,7 @@
  * Plugin Name:       Etisalat Payment Gateway for GiveWP
  * Plugin URI:        https://github.com/aheart037/etisalat
  * Description:       Accept donations through the Etisalat Payment Gateway (EPG) — Visa, Mastercard and other payment methods — with GiveWP donation forms. Redirects donors to the secure Etisalat payment page and finalizes the transaction when they return.
- * Version:           1.0.0
+ * Version:           1.0.1
  * Requires at least: 5.8
  * Requires PHP:      7.2
  * Author:            Almarah Foundation
@@ -25,7 +25,7 @@
 
 defined('ABSPATH') || exit;
 
-define('GIVE_ETISALAT_VERSION', '1.0.0');
+define('GIVE_ETISALAT_VERSION', '1.0.1');
 define('GIVE_ETISALAT_FILE', __FILE__);
 define('GIVE_ETISALAT_DIR', plugin_dir_path(__FILE__));
 define('GIVE_ETISALAT_URL', plugin_dir_url(__FILE__));

@@ -59,7 +59,7 @@ the TransactionID to the EPG Payment Page (POST form, as EPG requires)
 Donor authenticates (3D secure) and pays on the bank's page
       │
       ▼
-EPG returns the donor to the signed ReturnPath URL (POSTs TransactionID)
+EPG returns the donor to the ReturnPath URL (POSTs TransactionID)
       │
       ▼
 EPG Finalization API  (server-to-server)
@@ -69,6 +69,8 @@ EPG Finalization API  (server-to-server)
       ▼
 Donor is redirected to the donation success page / receipt
 ```
+
+> **Why the ReturnPath is not a signed URL:** EPG rejects return URLs longer than 256 characters (error 6560), and a GiveWP signed route's signature, expiration and argument list alone add ~170 characters. The plugin therefore uses a compact gateway route and keeps security where it belongs: the TransactionID EPG posts back must match the one stored at Registration, and only the server-to-server Finalization response can complete a donation. Requests without a valid TransactionID — and temporary API errors — never change a pending donation.
 
 Every EPG interaction is recorded on the donation (TransactionID, ApprovalCode, masked card number, card brand, amount charged, UniqueID) so you can reconcile payments with the bank.
 
@@ -91,7 +93,7 @@ Recurring donations are **not supported** in this release (the EPG card-tokeniza
 ## Developer notes
 
 * Gateway ID: `etisalat` (registered on `givewp_register_payment_gateway`).
-* The gateway extends GiveWP's `PaymentGateway` class and uses **secure gateway routes** (`generateSecureGatewayRouteUrl`) for both the payment-page redirect and the EPG ReturnPath. The URLs are signed and expire after one day.
+* The gateway extends GiveWP's `PaymentGateway` class. The intermediate payment-page redirect uses a **signed gateway route** (browser-only URL, expires after one day). The EPG ReturnPath uses a compact unsigned route because EPG limits it to 256 characters — verification is done through the TransactionID match and the Finalization API response instead.
 * Supports **v3 (Visual Form Builder)** forms via `enqueueScript()`/`formSettings()` and **v2 (option-based)** forms via `getLegacyFormFieldMarkup()`.
 * Filters available:
   * `give_etisalat_api_config` – override the API client configuration.

@@ -5,7 +5,7 @@ Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.2
 Requires Give: 2.30.0
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -63,6 +63,10 @@ Not yet. This release handles one-time donations. On forms where recurring is re
 Ask your bank for sandbox (staging) credentials and test cards, point the EPG API Endpoint URL to the sandbox URL, enable Debug Logging, and make a small test donation. Confirm the donation is marked Complete with a TransactionID and ApprovalCode in its notes, then switch the settings to your production credentials.
 
 == Changelog ==
+
+= 1.0.1 =
+* Fix: EPG rejected the Registration with error 6560 ("ReturnPath should not exceed 256 characters"). The ReturnPath is now a compact gateway route, and the success/failed redirect URLs are stored with the donation instead of being embedded in the URL.
+* Hardened the return handler: only a matching TransactionID plus the bank's Finalization response can change the donation status; stray requests and temporary API errors leave pending donations untouched.
 
 = 1.0.0 =
 * Initial release: Registration → payment page redirect → ReturnPath → Finalization flow, refunds, v2 + v3 form support, debug logging.

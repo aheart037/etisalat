@@ -15,10 +15,17 @@
  *                                   TransactionID) to the EPG Payment Page,
  *                                   exactly as required by the EPG guide.
  *  3. The donor authenticates (3D secure) and pays on the EPG hosted page.
- *  4. handleEtisalatReturn()      - EPG returns the donor to the signed
- *                                   ReturnPath URL. This method reads the
- *                                   TransactionID, calls the Finalization API
- *                                   and marks the donation complete/failed.
+ *  4. handleEtisalatReturn()      - EPG returns the donor to the ReturnPath
+ *                                   URL. This method reads the TransactionID,
+ *                                   calls the Finalization API and marks the
+ *                                   donation complete/failed.
+ *
+ * The ReturnPath uses a compact (unsigned) gateway route because EPG rejects
+ * ReturnPaths longer than 256 characters and a signed route's signature alone
+ * adds ~170 characters. Security is maintained by matching the TransactionID
+ * EPG posts back against the one stored at Registration, and by treating the
+ * server-to-server Finalization response as the single source of truth — a
+ * donation can only be completed when EPG itself confirms the payment.
  *
  * Supports both donation form generations:
  *  - v2 (option-based form editor) via getLegacyFormFieldMarkup()
@@ -46,13 +53,33 @@ defined('ABSPATH') || exit;
 class EtisalatGateway extends PaymentGateway
 {
     /**
-     * Signed routes used by this gateway.
+     * EPG rejects Registration calls whose ReturnPath exceeds this length.
+     */
+    const EPG_RETURN_PATH_MAX_LENGTH = 256;
+
+    /**
+     * Public (unsigned) routes used by this gateway.
+     *
+     * handleEtisalatReturn is the ReturnPath EPG redirects the donor to, so
+     * its URL must stay under the EPG_RETURN_PATH_MAX_LENGTH limit — a signed
+     * route (signature + expiration + arg list ≈ 170 extra characters) does
+     * not fit. See the class docblock for how the handler stays secure.
+     *
+     * @inheritDoc
+     */
+    public $routeMethods = [
+        'handleEtisalatReturn',
+    ];
+
+    /**
+     * Signed routes used by this gateway. These URLs are only ever followed
+     * by the donor's own browser (they are never sent to EPG), so they have
+     * no length restriction.
      *
      * @inheritDoc
      */
     public $secureRouteMethods = [
         'handleEtisalatPaymentPage',
-        'handleEtisalatReturn',
     ];
 
     /**
@@ -188,19 +215,42 @@ class EtisalatGateway extends PaymentGateway
                 : (!empty($gatewayData['cancelUrl']) ? $gatewayData['cancelUrl'] : give_get_failed_transaction_uri());
 
             /*
-             * The ReturnPath is where EPG sends the donor after the 3D secure
-             * authentication. It is a signed gateway route, so only GiveWP and
-             * the donation it was created for can use it.
+             * Remember where to send the donor after the payment. These URLs
+             * are stored as donation meta instead of being embedded in the
+             * ReturnPath, because EPG limits the ReturnPath to 256 characters
+             * and the success/failed URLs (plus a route signature) do not fit.
              */
-            $returnPath = $this->generateSecureGatewayRouteUrl(
+            give_update_meta($donation->id, '_give_etisalat_success_url', esc_url_raw($successUrl), '', 'donation');
+            give_update_meta($donation->id, '_give_etisalat_failed_url', esc_url_raw($failedUrl), '', 'donation');
+
+            /*
+             * The ReturnPath is where EPG sends the donor after the 3D secure
+             * authentication. It uses the compact gateway route (roughly
+             * domain + ~110 characters) to stay within the 256-character EPG
+             * limit. The handler verifies the TransactionID posted back by
+             * EPG against the one stored with this donation before doing
+             * anything, and only the Finalization response can complete it.
+             */
+            $returnPath = $this->generateGatewayRouteUrl(
                 'handleEtisalatReturn',
-                $donation->id,
                 [
-                    'donation-id'          => $donation->id,
-                    'givewp-success-url'   => $successUrl,
-                    'givewp-failed-url'    => $failedUrl,
+                    'donation-id' => $donation->id,
                 ]
             );
+
+            if (strlen($returnPath) > self::EPG_RETURN_PATH_MAX_LENGTH) {
+                throw new EtisalatApiException(
+                    sprintf(
+                        /* translators: 1: character limit, 2: character count */
+                        __(
+                            'The Etisalat gateway limits the payment return URL to %1$d characters, but this website\'s address produces one of %2$d characters. Please contact the site administrator.',
+                            'etisalat-gateway-givewp'
+                        ),
+                        self::EPG_RETURN_PATH_MAX_LENGTH,
+                        strlen($returnPath)
+                    )
+                );
+            }
 
             $orderName = sprintf(
                 /* translators: %s: donation id */
@@ -418,6 +468,13 @@ class EtisalatGateway extends PaymentGateway
      * TransactionID) after the 3D secure authentication. Finalize the
      * transaction and redirect to the donation result page.
      *
+     * The route is unsigned (EPG limits the ReturnPath to 256 characters), so
+     * this handler never trusts the request alone: the posted TransactionID
+     * must match the one stored at Registration, and the donation status is
+     * only changed based on the server-to-server Finalization response.
+     * Requests without a valid TransactionID are logged and redirected
+     * without touching the donation.
+     *
      * @param array $queryParams
      *
      * @return RedirectResponse
@@ -429,20 +486,28 @@ class EtisalatGateway extends PaymentGateway
         /** @var Donation|null $donation */
         $donation = $donationId ? Donation::find($donationId) : null;
 
-        $successUrl = !empty($queryParams['givewp-success-url'])
-            ? esc_url_raw($queryParams['givewp-success-url'])
-            : give_get_success_page_uri();
-
-        $failedUrl = !empty($queryParams['givewp-failed-url'])
-            ? esc_url_raw($queryParams['givewp-failed-url'])
-            : give_get_failed_transaction_uri();
-
         if (!$donation || $donation->gatewayId !== self::id()) {
             wp_die(
                 esc_html__('This payment link is no longer valid.', 'etisalat-gateway-givewp'),
                 esc_html__('Etisalat Payment Gateway', 'etisalat-gateway-givewp'),
                 ['response' => 410]
             );
+        }
+
+        /*
+         * The success/failed URLs were stored as donation meta during
+         * createPayment(), to keep the ReturnPath within the EPG length limit.
+         */
+        $successUrl = (string) give_get_meta($donation->id, '_give_etisalat_success_url', true, '', 'donation');
+
+        if ('' === $successUrl) {
+            $successUrl = give_get_success_page_uri();
+        }
+
+        $failedUrl = (string) give_get_meta($donation->id, '_give_etisalat_failed_url', true, '', 'donation');
+
+        if ('' === $failedUrl) {
+            $failedUrl = give_get_failed_transaction_uri();
         }
 
         /*
@@ -459,10 +524,17 @@ class EtisalatGateway extends PaymentGateway
             $transactionId = give_clean($_GET['TransactionID']);
         }
 
+        /*
+         * Without a TransactionID there is nothing to finalize. The donation
+         * is deliberately left untouched so a stray request (bot, preview,
+         * mistaken refresh) cannot sabotage a pending payment.
+         */
         if ('' === $transactionId) {
-            $this->failDonation(
-                $donation,
-                __('The Etisalat gateway did not return a transaction reference.', 'etisalat-gateway-givewp')
+            PaymentGatewayLog::error(
+                sprintf('[%s] Return without TransactionID; donation left pending.', $this->getName()),
+                [
+                    'Donation' => $donation,
+                ]
             );
 
             return new RedirectResponse($failedUrl);
@@ -470,16 +542,17 @@ class EtisalatGateway extends PaymentGateway
 
         /*
          * The TransactionID returned by EPG must match the one stored when the
-         * transaction was registered.
+         * transaction was registered. On mismatch the donation is left
+         * untouched — only the bank can supply the correct TransactionID, and
+         * the Finalization call below is what actually verifies the payment.
          */
         if ((string) $donation->gatewayTransactionId !== '' && (string) $transactionId !== (string) $donation->gatewayTransactionId) {
-            $this->failDonation(
-                $donation,
-                sprintf(
-                    /* translators: %s: transaction id */
-                    __('Returned TransactionID (%s) does not match this donation. Possible tampering attempt.', 'etisalat-gateway-givewp'),
-                    $transactionId
-                )
+            PaymentGatewayLog::error(
+                sprintf('[%s] Returned TransactionID does not match the donation; ignoring.', $this->getName()),
+                [
+                    'Donation'      => $donation,
+                    'TransactionID' => $transactionId,
+                ]
             );
 
             return new RedirectResponse($failedUrl);
@@ -567,7 +640,29 @@ class EtisalatGateway extends PaymentGateway
 
             return new RedirectResponse($failedUrl);
         } catch (Exception $e) {
-            $this->failDonation($donation, $e->getMessage());
+            /*
+             * The Finalization call could not be completed (network or gateway
+             * error). The payment may still have succeeded on the bank's side,
+             * so the donation is deliberately kept pending instead of being
+             * marked failed — reloaded returns, the donation detail screen or
+             * the bank's transaction report can be used to reconcile it.
+             */
+            DonationNote::create([
+                'donationId' => $donation->id,
+                'content'    => sprintf(
+                    /* translators: %s: error message */
+                    __('Finalization could not be completed; donation left pending for reconciliation. Reason: %s', 'etisalat-gateway-givewp'),
+                    $e->getMessage()
+                ),
+            ]);
+
+            PaymentGatewayLog::error(
+                sprintf('[%s] Finalization error; donation left pending.', $this->getName()),
+                [
+                    'Donation' => $donation,
+                    'error'    => $e->getMessage(),
+                ]
+            );
 
             return new RedirectResponse($failedUrl);
         }

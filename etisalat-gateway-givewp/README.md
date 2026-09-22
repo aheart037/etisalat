@@ -1,0 +1,111 @@
+# Etisalat Payment Gateway for GiveWP
+
+A GiveWP payment gateway add-on for the **Etisalat Payment Gateway (EPG)** e-commerce REST API — the same gateway your bank (UBL and other Etisalat/EPG partners) provides.
+
+Donors are redirected to the bank's secure, hosted payment page (3D secure — Visa, Mastercard and any other instruments enabled on your EPG account). No card data is ever collected or stored on your website.
+
+---
+
+## Requirements
+
+| Requirement | Version |
+|---|---|
+| WordPress | 5.8+ |
+| PHP | 7.2+ (with the `curl` extension, recommended) |
+| GiveWP | 2.24+ (works with GiveWP 3.x / 4.x) |
+| An EPG merchant account | credentials issued by your bank |
+
+## Installation
+
+1. Install and activate [GiveWP](https://wordpress.org/plugins/give/).
+2. Upload the `etisalat-gateway-givewp` folder to `/wp-content/plugins/`, or upload the plugin zip via **Plugins → Add New → Upload Plugin**.
+3. Activate **Etisalat Payment Gateway for GiveWP**.
+4. Go to **Donations → Settings → Payment Gateways → Etisalat** and fill in your credentials (below).
+5. Under **Donations → Settings → Payment Gateways → Gateways**, tick **Etisalat Payment Gateway** in the *Enabled Gateways* list and save.
+
+## Configuration
+
+Settings live at **Donations → Settings → Payment Gateways → Etisalat**:
+
+| Setting | Description | Default |
+|---|---|---|
+| **Customer ID** | Your EPG "Customer" / merchant name from the bank. Required. | — |
+| **User Name** | EPG API user name (user name/password authentication). | — |
+| **Password** | EPG API password. | — |
+| **Store** | Store value from the bank, if provided. Optional. | — |
+| **Terminal** | Terminal value from the bank, if provided. Optional. | — |
+| **EPG API Endpoint URL** | Production: `https://ipg.comtrust.ae` — Sandbox: `https://demo-ipg.ctdev.comtrust.ae`. Use the URL your bank confirms. | `https://ipg.comtrust.ae` |
+| **EPG API Port** | API port. | `2443` |
+| **Transaction Hint** | Payment instruments / capture behaviour. `CPT:Y;VCC:Y;` = cards with automatic capture. | `CPT:Y;VCC:Y;` |
+| **Accept Header** | `application/json` is the documented value for the EPG REST API. If your bank's EPG instance rejects it, switch to `text/xml-standard-api` (used by the bank's WooCommerce plugin). The plugin also retries automatically. | `application/json` |
+| **Checkout Label** | The label donors see on the donation form. | `Debit / Credit Card` |
+| **Donor-Facing Description** | Text shown under the gateway on the donation form (HTML allowed). | — |
+| **Verify SSL Certificate** | Verify the EPG server certificate against the bundled CA bundle. | Enabled |
+| **Debug Logging** | Log all EPG communication under **Donations → Tools → Logs → Payment Gateway** (passwords are never logged). Recommended while testing. | Disabled |
+
+## How the transaction flow works
+
+```
+Donation form ──► GiveWP creates a "pending" donation
+      │
+      ▼
+EPG Registration API  (server-to-server, TLS 1.2, port 2443)
+      │  returns TransactionID + Payment Page URL
+      ▼
+Donor is redirected to a signed GiveWP route that auto-submits
+the TransactionID to the EPG Payment Page (POST form, as EPG requires)
+      │
+      ▼
+Donor authenticates (3D secure) and pays on the bank's page
+      │
+      ▼
+EPG returns the donor to the signed ReturnPath URL (POSTs TransactionID)
+      │
+      ▼
+EPG Finalization API  (server-to-server)
+      │  ResponseCode 0   → donation completed, receipt sent
+      │  ResponseCode 210 → donation stays pending (offline/Central Bank payment)
+      │  anything else    → donation marked failed, donor sent to the failed page
+      ▼
+Donor is redirected to the donation success page / receipt
+```
+
+Every EPG interaction is recorded on the donation (TransactionID, ApprovalCode, masked card number, card brand, amount charged, UniqueID) so you can reconcile payments with the bank.
+
+## Refunds
+
+If your bank has **enabled the Refund API** on your EPG account (it requires bank approval), open a donation in **Donations → Donations**, change its status to *Refunded*, tick the *Refund in Etisalat Gateway* checkbox and save. The plugin calls the EPG Refund API for the full amount. If the refund fails, the reason is stored as a donation note and you can refund from the bank portal instead.
+
+## Developer notes
+
+* Gateway ID: `etisalat` (registered on `givewp_register_payment_gateway`).
+* The gateway extends GiveWP's `PaymentGateway` class and uses **secure gateway routes** (`generateSecureGatewayRouteUrl`) for both the payment-page redirect and the EPG ReturnPath. The URLs are signed and expire after one day.
+* Supports **v3 (Visual Form Builder)** forms via `enqueueScript()`/`formSettings()` and **v2 (option-based)** forms via `getLegacyFormFieldMarkup()`.
+* Filters available:
+  * `give_etisalat_api_config` – override the API client configuration.
+  * `give_etisalat_registration_params` – modify the Registration request parameters.
+  * `give_etisalat_transaction_hint` – modify the TransactionHint.
+  * `give_etisalat_description` – modify the donor-facing description.
+  * `give_etisalat_curl_options` – add/override cURL options for EPG calls.
+  * `give_etisalat_redirect_page_title` – the "redirecting…" page title.
+* Action available: `give_etisalat_donation_completed` – fires after a successful Finalization.
+
+### Running the offline test suite
+
+The plugin ships a small standalone test harness (no WordPress required):
+
+```bash
+php tests/run-tests.php
+```
+
+It stubs the WordPress/GiveWP functions, injects canned EPG responses and verifies the API client's request payloads, response parsing, error handling, response-code-210 (pending) handling and endpoint URL building.
+
+## References
+
+* [EPG REST Integration Guide (V1.7)](https://www.ubldigital.com/portals/0/Pdf/EPG-REST-Integration-V17.pdf) — the bank's official documentation
+* [GiveWP: How to Build a Gateway Add-on](https://docs.nexcess.com/software/give/how-to-build-a-gateway-add-on-for-givewp/)
+* [GiveWP example gateway add-on](https://github.com/impress-org/givewp-example-gateway)
+
+## License
+
+GPL-2.0-or-later
